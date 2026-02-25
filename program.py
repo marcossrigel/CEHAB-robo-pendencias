@@ -11,19 +11,14 @@ from selenium.webdriver.common.keys import Keys
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# ======================
-# PLANILHA (NOVA)
-# ======================
 CRED_JSON = "credenciais_sheets.json"
 SHEET_ID = "1CFI3282Mx7MDw13RK5Vq7cA0BJxKsN3h7pwjBzFVogA"
 WORKSHEET_TITLE = "Acompanhamento 2026"
 
 COL_SEI = "SEI"
 COL_STATUS = "STATUS"
+COL_DEST = "DESTINATÁRIO"
 
-# ======================
-# SEI
-# ======================
 SEI_LOGIN_URL = "https://sei.pe.gov.br/sip/login.php?sigla_orgao_sistema=GOVPE&sigla_sistema=SEI"
 
 XP_USUARIO = '//*[@id="txtUsuario"]'
@@ -34,16 +29,12 @@ XP_BTN_ACESSAR = '//*[@id="Acessar"]'
 XP_TXT_PESQUISA_RAPIDA = '//*[@id="txtPesquisaRapida"]'
 XP_BTN_LUPA = '//*[@id="spnInfraUnidade"]/img'
 
-# ======================
-# REGEX / REGRAS
-# ======================
+
 ROMAN_RE = re.compile(r"^(?=[IVXLCDM]+$)M{0,4}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$")
 REGEX_SEI = r"\d{7,}\.\d+\/\d{4}-\d+"
 SEI_RE = re.compile(REGEX_SEI)
 
-# ======================
-# SAÍDAS
-# ======================
+
 OUT_DIR = "downloaded_files"
 MAP_JSON = os.path.join(OUT_DIR, "sei_last_doc_map.json")
 
@@ -78,9 +69,7 @@ def save_map(data: dict) -> None:
 
 
 def pick_last_sei_from_cell(cell: str) -> str:
-    """
-    Se a célula tiver 1+ SEIs, pega somente o ÚLTIMO.
-    """
+
     text = (cell or "").strip()
     if not text:
         return ""
@@ -88,13 +77,8 @@ def pick_last_sei_from_cell(cell: str) -> str:
     return matches[-1].strip() if matches else text
 
 
-def fetch_seis_from_sheet_api() -> list[str]:
-    """
-    1) Lê todos os SEIs da coluna SEI
-    2) Ignora se STATUS = CONCLUÍDO
-    3) Se célula tiver múltiplos SEIs, pega o último
-    4) Remove duplicados mantendo ordem
-    """
+def fetch_seis_from_sheet_api() -> tuple[list[str], dict[str, str]]:
+
     scope = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/spreadsheets",
@@ -107,23 +91,32 @@ def fetch_seis_from_sheet_api() -> list[str]:
     sh = client.open_by_key(SHEET_ID)
     ws = sh.worksheet(WORKSHEET_TITLE)
 
-    rows = ws.get_all_records()  # cabeçalho vira chaves
+    rows = ws.get_all_records()
 
     seis = []
+    sei_to_dest = {}
+
     for r in rows:
         status = normalize(str(r.get(COL_STATUS, "")))
-        if "CONCLUID" in status:  # cobre CONCLUÍDO/CONCLUIDO etc.
+        if "CONCLUID" in status:
             continue
 
         raw = str(r.get(COL_SEI, "")).strip()
         sei = pick_last_sei_from_cell(raw)
-        if sei:
-            seis.append(sei)
+        if not sei:
+            continue
 
-    # dedup mantendo ordem
+        dest = (str(r.get(COL_DEST, "")) or "").strip()
+        if not dest:
+            dest = "—"
+
+        seis.append(sei)
+
+        if sei not in sei_to_dest:
+            sei_to_dest[sei] = dest
+
     uniq = list(dict.fromkeys(seis))
-    return uniq
-
+    return uniq, sei_to_dest
 
 def is_roman(s: str) -> bool:
     s = (s or "").strip().upper()
@@ -136,7 +129,26 @@ def sei_quick_search(sb: SB, sei: str) -> None:
     sb.clear(XP_TXT_PESQUISA_RAPIDA)
     sb.type(XP_TXT_PESQUISA_RAPIDA, sei)
     sb.click(XP_BTN_LUPA)
-    sb.sleep(2.2)
+
+    sb.sleep(3.0)
+
+def wait_for_roman_folders(sb: SB, timeout: int = 12) -> bool:
+    end = time.time() + timeout
+    while time.time() < end:
+        spans = sb.find_elements("css selector", 'span[id^="span"]')
+
+        if spans:
+            for sp in spans:
+                try:
+                    if not sp.is_displayed():
+                        continue
+                    txt = (sp.text or "").strip()
+                    if is_roman(txt):
+                        return True
+                except Exception:
+                    pass
+        time.sleep(0.4)
+    return False
 
 
 def find_tree_frame(sb: SB, timeout: int = 60) -> str:
@@ -311,7 +323,7 @@ def main():
     pasta_hoje = os.path.join(OUT_DIR, datetime.now().strftime("%Y-%m-%d"))
     os.makedirs(pasta_hoje, exist_ok=True)
 
-    seis = fetch_seis_from_sheet_api()
+    seis, sei_to_dest = fetch_seis_from_sheet_api()
     if not seis:
         print("⚠️ Nenhum SEI encontrado (ou todos estão CONCLUÍDO).")
         return
@@ -321,7 +333,7 @@ def main():
     old_map = load_map()
     new_map = dict(old_map)
 
-    mudancas = {}  # {sei: {"qtd_novos": int, "ultimo": str, "novos": [str]}}
+    mudancas = {} 
 
     sei_user = os.getenv("SEI_USER", "marcos.rigel")
     sei_pass = os.getenv("SEI_PASS", "Abc123!@")
@@ -333,7 +345,6 @@ def main():
     ) as sb:
         sb.maximize_window()
 
-        # login
         sb.open(SEI_LOGIN_URL)
         sb.wait_for_element_visible(XP_USUARIO, timeout=30)
         sb.type(XP_USUARIO, sei_user)
@@ -359,42 +370,42 @@ def main():
         except Exception:
             pass
 
-        # garante tela principal
         try:
             sb.wait_for_element_visible(XP_TXT_PESQUISA_RAPIDA, timeout=60)
         except Exception:
             sb.save_screenshot("erro_sei_pos_login.png")
             raise
 
-        # acha frame da árvore uma vez
         sei_quick_search(sb, seis[0])
         tree_frame = find_tree_frame(sb, timeout=80)
 
-        # loop
         for idx, sei in enumerate(seis, start=1):
             print(f"\n[{idx}/{len(seis)}] 🔎 SEI: {sei}")
+            print("   👤 Destinatário:", sei_to_dest.get(sei, "—"))
 
             try:
                 sei_quick_search(sb, sei)
 
                 sb.switch_to_default_content()
                 sb.switch_to_frame(tree_frame)
+                achou_romano = wait_for_roman_folders(sb, timeout=14)
 
-                expand_last_roman_folder(sb)
+                if achou_romano:
+                    expand_last_roman_folder(sb)
+                    sb.sleep(0.8)
+                else:
+                    sb.sleep(1.2)
 
-                items = get_visible_files_in_tree(sb)   # [(num, texto)...]
+                items = get_visible_files_in_tree(sb)
                 textos = [t for _, t in items]
 
                 anterior = (old_map.get(sei) or "").strip()
 
-                # regra:
-                # - se já tenho "anterior" e ele aparece na árvore -> tudo após ele é "novo"
-                # - se não -> primeira execução (ou perdeu referência): pega só o último como "novo"
                 if anterior and anterior in textos:
                     idx_prev = textos.index(anterior)
                     novos = items[idx_prev + 1:]
                 else:
-                    novos = [items[-1]]  # primeira vez: último doc vira referência
+                    novos = [items[-1]]
 
                 novos_txts = [txt for _, txt in novos]
                 ultimo_txt = items[-1][1]
@@ -436,7 +447,6 @@ def main():
             finally:
                 sb.switch_to_default_content()
 
-        # relatório final (terminal + whatsapp)
         linhas = []
         linhas.append("Solicitações SEPLAG - SEFAZ --> Acompanhamento 2026")
         linhas.append("📌 SEIs com novos documentos:")
@@ -446,7 +456,8 @@ def main():
             linhas.append("Nenhum SEI mudou ✅")
         else:
             for sei_k, info in mudancas.items():
-                linhas.append(sei_k)
+                dest = sei_to_dest.get(sei_k, "—")
+                linhas.append(f"{sei_k} - {dest}")
                 for doc in info.get("novos", []):
                     linhas.append(f"-> {doc}")
                 linhas.append("")
