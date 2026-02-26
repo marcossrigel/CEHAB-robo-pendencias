@@ -11,7 +11,7 @@ from selenium.webdriver.common.keys import Keys
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-CRED_JSON = "credenciais_sheets.json"
+CRED_JSON = r"c:\temp\ws-python-robo-solicita-seplag-sefaz\credenciais_sheets.json"
 SHEET_ID = "1CFI3282Mx7MDw13RK5Vq7cA0BJxKsN3h7pwjBzFVogA"
 WORKSHEET_TITLE = "Acompanhamento 2026"
 
@@ -23,12 +23,11 @@ SEI_LOGIN_URL = "https://sei.pe.gov.br/sip/login.php?sigla_orgao_sistema=GOVPE&s
 
 XP_USUARIO = '//*[@id="txtUsuario"]'
 XP_SENHA = '//*[@id="pwdSenha"]'
-CSS_SELECT_ORGAO = '#selOrgao'
-XP_BTN_ACESSAR = '//*[@id="Acessar"]'
-
+CSS_BTN_ACESSAR = '#sbmAcessar'
+XP_BTN_ACESSAR = '//*[@id="sbmAcessar"]'
+CSS_SELECT_ORGAO = "#selOrgao"
 XP_TXT_PESQUISA_RAPIDA = '//*[@id="txtPesquisaRapida"]'
 XP_BTN_LUPA = '//*[@id="spnInfraUnidade"]/img'
-
 
 ROMAN_RE = re.compile(r"^(?=[IVXLCDM]+$)M{0,4}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$")
 REGEX_SEI = r"\d{7,}\.\d+\/\d{4}-\d+"
@@ -98,7 +97,7 @@ def fetch_seis_from_sheet_api() -> tuple[list[str], dict[str, str]]:
 
     for r in rows:
         status = normalize(str(r.get(COL_STATUS, "")))
-        if "CONCLUID" in status:
+        if "CONCLUÍDO" in status:
             continue
 
         raw = str(r.get(COL_SEI, "")).strip()
@@ -346,20 +345,27 @@ def main():
         sb.maximize_window()
 
         sb.open(SEI_LOGIN_URL)
-        sb.wait_for_element_visible(XP_USUARIO, timeout=30)
-        sb.type(XP_USUARIO, sei_user)
+        sb.wait_for_ready_state_complete()
 
-        sb.wait_for_element_visible(XP_SENHA, timeout=30)
-        sb.type(XP_SENHA, sei_pass)
+        # ✅ Se já estiver logado, pula login
+        if sb.is_element_visible(XP_TXT_PESQUISA_RAPIDA):
+            print("✅ Já estava logado (pulando login).")
+        else:
+            sb.wait_for_element_visible(XP_USUARIO, timeout=30)
+            sb.type(XP_USUARIO, sei_user)
 
-        sb.wait_for_element_visible(CSS_SELECT_ORGAO, timeout=30)
-        sb.select_option_by_text(CSS_SELECT_ORGAO, "CEHAB")
-        sb.sleep(0.5)
+            sb.wait_for_element_visible(XP_SENHA, timeout=30)
+            sb.type(XP_SENHA, sei_pass)
 
-        sb.wait_for_element_visible(XP_BTN_ACESSAR, timeout=30)
-        sb.click(XP_BTN_ACESSAR)
-        sb.sleep(1.5)
+            sb.wait_for_element_visible(CSS_SELECT_ORGAO, timeout=30)
+            sb.select_option_by_text(CSS_SELECT_ORGAO, "CEHAB")
+            sb.sleep(0.5)
 
+            sb.wait_for_element_visible(CSS_BTN_ACESSAR, timeout=30)
+            sb.click(CSS_BTN_ACESSAR)
+            sb.sleep(1.5)
+
+        # ✅ Aqui é comum pros 2 casos (logou agora OU já tava logado)
         try:
             sb.accept_alert(timeout=2)
         except Exception:
@@ -370,11 +376,7 @@ def main():
         except Exception:
             pass
 
-        try:
-            sb.wait_for_element_visible(XP_TXT_PESQUISA_RAPIDA, timeout=60)
-        except Exception:
-            sb.save_screenshot("erro_sei_pos_login.png")
-            raise
+        sb.wait_for_element_visible(XP_TXT_PESQUISA_RAPIDA, timeout=60)
 
         sei_quick_search(sb, seis[0])
         tree_frame = find_tree_frame(sb, timeout=80)
