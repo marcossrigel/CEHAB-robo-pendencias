@@ -11,7 +11,7 @@ from selenium.webdriver.common.keys import Keys
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-CRED_JSON = r"c:\temp\ws-python-robo-solicita-seplag-sefaz\credenciais_sheets.json"
+CRED_JSON = r"c:\temp\ws-python-pendencias\credenciais_sheets.json"
 SHEET_ID = "1CFI3282Mx7MDw13RK5Vq7cA0BJxKsN3h7pwjBzFVogA"
 WORKSHEET_TITLE = "Acompanhamento 2026"
 
@@ -347,7 +347,6 @@ def main():
         sb.open(SEI_LOGIN_URL)
         sb.wait_for_ready_state_complete()
 
-        # ✅ Se já estiver logado, pula login
         if sb.is_element_visible(XP_TXT_PESQUISA_RAPIDA):
             print("✅ Já estava logado (pulando login).")
         else:
@@ -365,7 +364,6 @@ def main():
             sb.click(CSS_BTN_ACESSAR)
             sb.sleep(1.5)
 
-        # ✅ Aqui é comum pros 2 casos (logou agora OU já tava logado)
         try:
             sb.accept_alert(timeout=2)
         except Exception:
@@ -450,7 +448,7 @@ def main():
                 sb.switch_to_default_content()
 
         linhas = []
-        linhas.append("Solicitações SEPLAG - SEFAZ --> Acompanhamento 2026")
+        linhas.append("⚠️ Solicitações (Pendências) SEPLAG/SEFAZ --> Acompanhamento 2026 ⚠️")
         linhas.append("📌 SEIs com novos documentos:")
         linhas.append("------------------------------")
 
