@@ -448,7 +448,9 @@ def main():
                 sb.switch_to_default_content()
 
         linhas = []
-        linhas.append("⚠️ Solicitações (Pendências) SEPLAG/SEFAZ --> Acompanhamento 2026 ⚠️")
+        data_msg = datetime.now().strftime("%d/%m/%Y")
+
+        linhas.append(f"⚠️ Solicitações (Pendências) SEPLAG/SEFAZ --> Acompanhamento 2026 ⚠️ dia {data_msg}")
         linhas.append("📌 SEIs com novos documentos:")
         linhas.append("------------------------------")
 
