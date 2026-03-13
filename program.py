@@ -1,9 +1,8 @@
 from seleniumbase import SB
 import os
 import re
-import time
 import json
-import csv
+import time
 from datetime import datetime
 
 import pyperclip
@@ -18,13 +17,12 @@ WORKSHEET_TITLE = "Acompanhamento 2026"
 COL_SEI = "SEI"
 COL_STATUS = "STATUS"
 COL_DEST = "DESTINATÁRIO"
+COL_OBJETO = "OBJETO"
 
 SEI_LOGIN_URL = "https://sei.pe.gov.br/sip/login.php?sigla_orgao_sistema=GOVPE&sigla_sistema=SEI"
-
 XP_USUARIO = '//*[@id="txtUsuario"]'
 XP_SENHA = '//*[@id="pwdSenha"]'
 CSS_BTN_ACESSAR = '#sbmAcessar'
-XP_BTN_ACESSAR = '//*[@id="sbmAcessar"]'
 CSS_SELECT_ORGAO = "#selOrgao"
 XP_TXT_PESQUISA_RAPIDA = '//*[@id="txtPesquisaRapida"]'
 XP_BTN_LUPA = '//*[@id="spnInfraUnidade"]/img'
@@ -33,14 +31,9 @@ ROMAN_RE = re.compile(r"^(?=[IVXLCDM]+$)M{0,4}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(I
 REGEX_SEI = r"\d{7,}\.\d+\/\d{4}-\d+"
 SEI_RE = re.compile(REGEX_SEI)
 
-
-OUT_DIR = "downloaded_files"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OUT_DIR = os.path.join(BASE_DIR, "downloaded_files")
 MAP_JSON = os.path.join(OUT_DIR, "sei_last_doc_map.json")
-
-
-def now_ts():
-    return datetime.now().strftime("%Y%m%d_%H%M%S")
-
 
 def normalize(s: str) -> str:
     return (s or "").strip().upper()
@@ -68,7 +61,6 @@ def save_map(data: dict) -> None:
 
 
 def pick_last_sei_from_cell(cell: str) -> str:
-
     text = (cell or "").strip()
     if not text:
         return ""
@@ -76,8 +68,7 @@ def pick_last_sei_from_cell(cell: str) -> str:
     return matches[-1].strip() if matches else text
 
 
-def fetch_seis_from_sheet_api() -> tuple[list[str], dict[str, str]]:
-
+def fetch_seis_from_sheet_api() -> tuple[list[str], dict[str, str], dict[str, str]]:
     scope = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/spreadsheets",
@@ -89,11 +80,11 @@ def fetch_seis_from_sheet_api() -> tuple[list[str], dict[str, str]]:
 
     sh = client.open_by_key(SHEET_ID)
     ws = sh.worksheet(WORKSHEET_TITLE)
-
     rows = ws.get_all_records()
 
     seis = []
     sei_to_dest = {}
+    sei_to_objeto = {}
 
     for r in rows:
         status = normalize(str(r.get(COL_STATUS, "")))
@@ -105,17 +96,46 @@ def fetch_seis_from_sheet_api() -> tuple[list[str], dict[str, str]]:
         if not sei:
             continue
 
-        dest = (str(r.get(COL_DEST, "")) or "").strip()
-        if not dest:
-            dest = "—"
+        dest = (str(r.get(COL_DEST, "")) or "").strip() or "—"
+        objeto = (str(r.get(COL_OBJETO, "")) or "").strip() or "—"
 
         seis.append(sei)
 
         if sei not in sei_to_dest:
             sei_to_dest[sei] = dest
 
+        if sei not in sei_to_objeto:
+            sei_to_objeto[sei] = objeto
+
     uniq = list(dict.fromkeys(seis))
-    return uniq, sei_to_dest
+    return uniq, sei_to_dest, sei_to_objeto
+
+
+
+
+def wait_until_not_visible_text(sb: SB, text: str, timeout: int = 15) -> None:
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            if not sb.is_text_visible(text):
+                return
+        except Exception:
+            return
+        time.sleep(0.2)
+
+
+def wait_for_tree_loaded(sb: SB, timeout: int = 15) -> None:
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            spans = sb.find_elements("css selector", 'span[id^="span"]')
+            icons = sb.find_elements("css selector", 'img[id^="icon"]')
+            if spans or icons:
+                return
+        except Exception:
+            pass
+        time.sleep(0.2)
+
 
 def is_roman(s: str) -> bool:
     s = (s or "").strip().upper()
@@ -123,34 +143,20 @@ def is_roman(s: str) -> bool:
 
 
 def sei_quick_search(sb: SB, sei: str) -> None:
-    sb.wait_for_element_visible(XP_TXT_PESQUISA_RAPIDA, timeout=40)
-    sb.click(XP_TXT_PESQUISA_RAPIDA)
+    sb.wait_for_element_visible(XP_TXT_PESQUISA_RAPIDA, timeout=30)
     sb.clear(XP_TXT_PESQUISA_RAPIDA)
     sb.type(XP_TXT_PESQUISA_RAPIDA, sei)
-    sb.click(XP_BTN_LUPA)
 
-    sb.sleep(3.0)
+    try:
+        sb.click(XP_BTN_LUPA)
+    except Exception:
+        sb.js_click(XP_BTN_LUPA)
 
-def wait_for_roman_folders(sb: SB, timeout: int = 12) -> bool:
-    end = time.time() + timeout
-    while time.time() < end:
-        spans = sb.find_elements("css selector", 'span[id^="span"]')
-
-        if spans:
-            for sp in spans:
-                try:
-                    if not sp.is_displayed():
-                        continue
-                    txt = (sp.text or "").strip()
-                    if is_roman(txt):
-                        return True
-                except Exception:
-                    pass
-        time.sleep(0.4)
-    return False
+    wait_until_not_visible_text(sb, "Aguarde", timeout=15)
+    sb.wait_for_ready_state_complete()
 
 
-def find_tree_frame(sb: SB, timeout: int = 60) -> str:
+def find_tree_frame(sb: SB, timeout: int = 40):
     end = time.time() + timeout
     last_err = None
 
@@ -160,38 +166,55 @@ def find_tree_frame(sb: SB, timeout: int = 60) -> str:
             frames = sb.find_elements("css selector", "iframe")
         except Exception as e:
             last_err = e
-            time.sleep(0.5)
+            time.sleep(0.2)
             continue
 
         for fr in frames:
             name = (fr.get_attribute("name") or "").strip()
             fid = (fr.get_attribute("id") or "").strip()
-            key = name or fid
-            if not key:
-                continue
+            key = name or fid or fr
+
             try:
                 sb.switch_to_default_content()
                 sb.switch_to_frame(key)
 
                 spans = sb.find_elements("css selector", 'span[id^="span"]')
-                for sp in spans[:120]:
+                for sp in spans[:80]:
                     txt = (sp.text or "").strip()
-                    if is_roman(txt):
+                    if txt and (is_roman(txt) or len(txt) > 3):
                         sb.switch_to_default_content()
                         return key
             except Exception as e:
                 last_err = e
                 continue
 
-        time.sleep(0.6)
+        time.sleep(0.2)
 
     sb.switch_to_default_content()
-    raise RuntimeError(f"Não consegui localizar o iframe da árvore automaticamente. Último erro: {last_err}")
+    raise RuntimeError(f"Não consegui localizar o iframe da árvore. Último erro: {last_err}")
+
+
+def wait_for_roman_folders(sb: SB, timeout: int = 10) -> bool:
+    end = time.time() + timeout
+    while time.time() < end:
+        spans = sb.find_elements("css selector", 'span[id^="span"]')
+        for sp in spans:
+            try:
+                if not sp.is_displayed():
+                    continue
+                txt = (sp.text or "").strip()
+                if is_roman(txt):
+                    return True
+            except Exception:
+                pass
+        time.sleep(0.2)
+    return False
 
 
 def expand_last_roman_folder(sb: SB) -> None:
     spans = sb.find_elements("css selector", 'span[id^="span"]')
     romans = []
+
     for sp in spans:
         try:
             if not sp.is_displayed():
@@ -203,20 +226,20 @@ def expand_last_roman_folder(sb: SB) -> None:
             continue
 
     if not romans:
-        raise RuntimeError("Não achei nenhuma pasta romana na árvore.")
+        return
 
     _, last_sp = romans[-1]
     sb.execute_script("arguments[0].scrollIntoView({block:'center'});", last_sp)
-    sb.sleep(0.15)
 
     parent = last_sp.find_element("xpath", "./..")
     imgs = parent.find_elements("css selector", "img")
+
     for img in imgs:
         try:
             src = (img.get_attribute("src") or "").lower()
             if "plus" in src or "expand" in src:
                 img.click()
-                sb.sleep(0.6)
+                wait_for_tree_loaded(sb, timeout=8)
                 return
         except Exception:
             pass
@@ -253,76 +276,153 @@ def get_visible_files_in_tree(sb: SB) -> list[tuple[str, str]]:
             continue
 
     if not items:
-        raise RuntimeError("Não achei arquivos visíveis (img#icon... + span#span...).")
+        raise RuntimeError("Não achei arquivos visíveis na árvore.")
 
     return items
 
 
-def click_papel_azul_do_item(sb: SB, num: str) -> None:
-    xp_icon = f'//*[@id="icon{num}"]'
-    sb.wait_for_element_visible(xp_icon, timeout=15)
-    sb.scroll_to(xp_icon)
-    try:
-        sb.js_click(xp_icon)
-    except Exception:
-        sb.click(xp_icon)
-    sb.sleep(0.12)
+def wait_for_whatsapp_ready(sb: SB, timeout: int = 30) -> str:
+    possiveis_caixas = [
+        '//footer//*[@contenteditable="true"][@data-tab]',
+        '//footer//*[@contenteditable="true"]',
+        '//div[@contenteditable="true"][@role="textbox"]',
+        '//div[@title="Digite uma mensagem"]',
+        '//div[@title="Mensagem"]',
+        '//p[@class and ancestor::*[@contenteditable="true"]]',
+    ]
 
+    end = time.time() + timeout
+    while time.time() < end:
+        for sel in possiveis_caixas:
+            try:
+                if sb.is_element_visible(sel):
+                    return sel
+            except Exception:
+                pass
+        time.sleep(0.5)
 
-def open_doc(sb: SB, num: str) -> None:
-    xp_span = f'//*[@id="span{num}"]'
-    sb.wait_for_element_visible(xp_span, timeout=15)
-    sb.scroll_to(xp_span)
-    try:
-        sb.js_click(xp_span)
-    except Exception:
-        sb.click(xp_span)
-
-
-def save_screenshot(sb: SB, folder: str, prefix: str) -> str:
-    os.makedirs(folder, exist_ok=True)
-    filename = f"{prefix}_{now_ts()}.png"
-    path = os.path.join(folder, filename)
-    sb.save_screenshot(path)
-    return path
+    raise RuntimeError("Não consegui localizar a caixa de mensagem do WhatsApp.")
 
 
 def enviar_whatsapp(sb: SB, link_grupo: str, mensagem: str, timeout: int = 120):
     print("🔗 Abrindo link do grupo...")
     sb.open(link_grupo)
+    sb.wait_for_ready_state_complete()
 
-    btn_continuar = '//*[@id="whatsapp-web-button"]/span'
-    sb.wait_for_element_visible(btn_continuar, timeout=timeout)
-    sb.click(btn_continuar)
-    sb.sleep(2)
+    time.sleep(2)
+
+    possiveis_botoes_continuar = [
+        '//*[@id="whatsapp-web-button"]',
+        '//*[@id="whatsapp-web-button"]/span',
+        '//a[@id="whatsapp-web-button"]',
+        '//a[contains(@href, "web.whatsapp.com")]',
+        '//span[contains(normalize-space(.), "Continuar para o WhatsApp Web")]',
+        '//a[contains(., "Continuar para o WhatsApp Web")]',
+    ]
+
+    clicou_continuar = False
+
+    for sel in possiveis_botoes_continuar:
+        try:
+            if sb.is_element_visible(sel, timeout=4):
+                print(f"🖱️ Clicando em: {sel}")
+                try:
+                    sb.click(sel)
+                except Exception:
+                    sb.js_click(sel)
+                clicou_continuar = True
+                break
+        except Exception:
+            pass
+
+    if not clicou_continuar:
+        raise RuntimeError("Não consegui clicar em 'Continuar para o WhatsApp Web'.")
+
+    time.sleep(4)
 
     try:
         sb.switch_to_window(-1)
     except Exception:
         pass
 
-    caixa_msg = '//*[@id="main"]/footer/div[1]/div/span/div/div/div/div[3]/div[1]/p'
-    sb.wait_for_element_visible(caixa_msg, timeout=timeout)
-    sb.click(caixa_msg)
-    sb.sleep(0.3)
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            url_atual = sb.get_current_url()
+            if "web.whatsapp.com" in url_atual:
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+
+    sb.wait_for_ready_state_complete()
+
+    caixa_usada = wait_for_whatsapp_ready(sb, timeout=timeout)
+
+    print(f"✅ Caixa encontrada: {caixa_usada}")
+
+    try:
+        sb.click(caixa_usada)
+    except Exception:
+        sb.js_click(caixa_usada)
 
     pyperclip.copy(mensagem)
-    el = sb.find_element(caixa_msg)
-    el.send_keys(Keys.CONTROL, "v")
 
-    sb.sleep(1.5)
-    el.send_keys(Keys.ENTER)
-    sb.sleep(3)
-    print("📨 Mensagem enviada no grupo!")
+    enviado_texto = False
+    try:
+        el = sb.find_element(caixa_usada)
+        el.send_keys(Keys.CONTROL, "v")
+        enviado_texto = True
+    except Exception:
+        pass
+
+    if not enviado_texto:
+        try:
+            sb.type(caixa_usada, mensagem)
+            enviado_texto = True
+        except Exception:
+            pass
+
+    if not enviado_texto:
+        raise RuntimeError("Não consegui preencher a caixa de mensagem no WhatsApp.")
+
+    time.sleep(1)
+
+    botoes_enviar = [
+        '//button[@aria-label="Enviar"]',
+        '//span[@data-icon="send"]/ancestor::button',
+        '//button[.//span[@data-icon="send"]]',
+        '//div[@role="button"]//span[@data-icon="send"]/ancestor::div[@role="button"]',
+    ]
+
+    enviado = False
+    for botao in botoes_enviar:
+        try:
+            if sb.is_element_visible(botao, timeout=3):
+                sb.click(botao)
+                enviado = True
+                break
+        except Exception:
+            pass
+
+    if not enviado:
+        try:
+            el = sb.find_element(caixa_usada)
+            el.send_keys(Keys.ENTER)
+            enviado = True
+        except Exception:
+            pass
+
+    if enviado:
+        print("📨 Mensagem enviada no grupo!")
+    else:
+        raise RuntimeError("Não consegui enviar a mensagem no WhatsApp.")
 
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    pasta_hoje = os.path.join(OUT_DIR, datetime.now().strftime("%Y-%m-%d"))
-    os.makedirs(pasta_hoje, exist_ok=True)
-
-    seis, sei_to_dest = fetch_seis_from_sheet_api()
+    seis, sei_to_dest, sei_to_objeto = fetch_seis_from_sheet_api()
     if not seis:
         print("⚠️ Nenhum SEI encontrado (ou todos estão CONCLUÍDO).")
         return
@@ -331,8 +431,7 @@ def main():
 
     old_map = load_map()
     new_map = dict(old_map)
-
-    mudancas = {} 
+    mudancas = {}
 
     sei_user = os.getenv("SEI_USER", "marcos.rigel")
     sei_pass = os.getenv("SEI_PASS", "Abc123!@")
@@ -342,14 +441,11 @@ def main():
         headless=False,
         user_data_dir="C:/temp/chrome_profile_whatsapp"
     ) as sb:
-        sb.maximize_window()
 
         sb.open(SEI_LOGIN_URL)
         sb.wait_for_ready_state_complete()
 
-        if sb.is_element_visible(XP_TXT_PESQUISA_RAPIDA):
-            print("✅ Já estava logado (pulando login).")
-        else:
+        if not sb.is_element_visible(XP_TXT_PESQUISA_RAPIDA):
             sb.wait_for_element_visible(XP_USUARIO, timeout=30)
             sb.type(XP_USUARIO, sei_user)
 
@@ -358,11 +454,9 @@ def main():
 
             sb.wait_for_element_visible(CSS_SELECT_ORGAO, timeout=30)
             sb.select_option_by_text(CSS_SELECT_ORGAO, "CEHAB")
-            sb.sleep(0.5)
 
             sb.wait_for_element_visible(CSS_BTN_ACESSAR, timeout=30)
             sb.click(CSS_BTN_ACESSAR)
-            sb.sleep(1.5)
 
         try:
             sb.accept_alert(timeout=2)
@@ -377,58 +471,54 @@ def main():
         sb.wait_for_element_visible(XP_TXT_PESQUISA_RAPIDA, timeout=60)
 
         sei_quick_search(sb, seis[0])
-        tree_frame = find_tree_frame(sb, timeout=80)
+        tree_frame = find_tree_frame(sb, timeout=40)
 
         for idx, sei in enumerate(seis, start=1):
             print(f"\n[{idx}/{len(seis)}] 🔎 SEI: {sei}")
             print("   👤 Destinatário:", sei_to_dest.get(sei, "—"))
+            print("   📌 Objeto      :", sei_to_objeto.get(sei, "—"))
 
             try:
                 sei_quick_search(sb, sei)
 
                 sb.switch_to_default_content()
                 sb.switch_to_frame(tree_frame)
-                achou_romano = wait_for_roman_folders(sb, timeout=14)
 
+                achou_romano = wait_for_roman_folders(sb, timeout=8)
                 if achou_romano:
                     expand_last_roman_folder(sb)
-                    sb.sleep(0.8)
-                else:
-                    sb.sleep(1.2)
 
+                wait_for_tree_loaded(sb, timeout=8)
                 items = get_visible_files_in_tree(sb)
                 textos = [t for _, t in items]
 
-                anterior = (old_map.get(sei) or "").strip()
+                anterior = (new_map.get(sei) or "").strip()
 
-                if anterior and anterior in textos:
-                    idx_prev = textos.index(anterior)
-                    novos = items[idx_prev + 1:]
-                else:
-                    novos = [items[-1]]
+                ultimo_txt = ""
+                novos = []
+
+                if items:
+                    ultimo_txt = items[-1][1]
+
+                    if not anterior:
+                        novos = [items[-1]]
+                    elif anterior == ultimo_txt:
+                        novos = []
+                    elif anterior in textos:
+                        idx_prev = textos.index(anterior)
+                        novos = items[idx_prev + 1:]
+                    else:
+                        novos = [items[-1]]
 
                 novos_txts = [txt for _, txt in novos]
-                ultimo_txt = items[-1][1]
-
                 qtd_novos = len(novos)
-                mudou = (qtd_novos > 0 and (not anterior or ultimo_txt != anterior))
+                mudou = qtd_novos > 0
 
-                screenshot_paths = []
                 if mudou and novos:
-                    for num_item, txt_item in novos:
-                        click_papel_azul_do_item(sb, num_item)
-                        open_doc(sb, num_item)
-                        sb.sleep(1.2)
-
-                        prefix = f"sei_{safe_name(sei)}_{safe_name(txt_item)[:50]}"
-                        shot = save_screenshot(sb, folder=pasta_hoje, prefix=prefix)
-                        screenshot_paths.append(shot)
-
                     mudancas[sei] = {
                         "qtd_novos": qtd_novos,
                         "ultimo": ultimo_txt,
                         "novos": novos_txts,
-                        "screens": screenshot_paths,
                     }
 
                 print("   ✅ Último doc:", ultimo_txt)
@@ -441,6 +531,7 @@ def main():
                 print("   🔁 Mudou?    :", "SIM" if mudou else "NÃO")
 
                 new_map[sei] = ultimo_txt
+                save_map(new_map)
 
             except Exception as e:
                 print("   ❌ Erro neste SEI:", repr(e))
@@ -459,7 +550,10 @@ def main():
         else:
             for sei_k, info in mudancas.items():
                 dest = sei_to_dest.get(sei_k, "—")
+                objeto = sei_to_objeto.get(sei_k, "—")
+
                 linhas.append(f"{sei_k} - {dest}")
+                linhas.append(f"Objeto: {objeto}")
                 for doc in info.get("novos", []):
                     linhas.append(f"-> {doc}")
                 linhas.append("")
@@ -470,11 +564,14 @@ def main():
         print(mensagem_final)
         print("==============================")
 
-        if mudancas:
-            enviar_whatsapp(sb, "https://chat.whatsapp.com/Dve4KOqA55x0Mu56AqD4Ad", mensagem_final)
-            sb.sleep(10)
+        # salva o mapa ANTES de qualquer envio
+        save_map(new_map)
 
-    save_map(new_map)
+        if mudancas:
+            try:
+                enviar_whatsapp(sb, "https://chat.whatsapp.com/Dve4KOqA55x0Mu56AqD4Ad", mensagem_final)
+            except Exception as e:
+                print(f"⚠️ Erro ao enviar no WhatsApp: {e}")
 
     print("\n✅ Finalizado com sucesso!")
     input("\n👉 Pressione ENTER para fechar o terminal...")
